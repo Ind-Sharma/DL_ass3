@@ -18,6 +18,7 @@ import math
 import copy
 import os
 import json
+import gdown
 from typing import Optional, Tuple
 
 import torch
@@ -472,6 +473,12 @@ class Transformer(nn.Module):
         self.src_vocab_path = os.path.join(self.assets_dir, "src_vocab.pt")
         self.tgt_vocab_path = os.path.join(self.assets_dir, "tgt_vocab.pt")
         self.best_model_path = os.path.join(self.assets_dir, "best_model.pt")
+        self.artifact_ids = {
+            "best_model.pt": "1eyb3Grpegv31IBjmQnk1z99ny97Tdv8d",
+            "config.json": "1H80HOScuDZ27F_cUD0294UJlcxGPlDjC",
+            "src_vocab.pt": "1WoETZ974sAAjZPtJP1hovlMbgIMofPHF",
+            "tgt_vocab.pt": "1hNvLUC-rKhTTewGWbHskkR1iyYGgFMXs",
+        }
 
         self.pad_idx = 1
         self.sos_idx = 2
@@ -488,6 +495,9 @@ class Transformer(nn.Module):
         self.tgt_itos = []
         self.spacy_src = None
         self.spacy_tgt = None
+
+        os.makedirs(self.assets_dir, exist_ok=True)
+        self._ensure_artifacts_available()
 
         user_provided_vocab = (src_vocab_size is not None) and (tgt_vocab_size is not None)
         artifact_cfg = self._load_artifact_config()
@@ -561,6 +571,31 @@ class Transformer(nn.Module):
         checkpoint = torch.load(checkpoint_path, map_location=torch.device("cpu"))
         state_dict = checkpoint.get("model_state_dict", checkpoint)
         self.load_state_dict(state_dict, strict=False)
+
+    def _ensure_artifacts_available(self) -> None:
+        """
+        Download required inference artifacts from Google Drive when missing.
+        """
+        file_map = {
+            "config.json": self.config_path,
+            "src_vocab.pt": self.src_vocab_path,
+            "tgt_vocab.pt": self.tgt_vocab_path,
+            "best_model.pt": self.best_model_path,
+        }
+        for name, path in file_map.items():
+            if os.path.exists(path):
+                continue
+            file_id = self.artifact_ids.get(name)
+            if not file_id:
+                continue
+            try:
+                gdown.download(
+                    id=file_id,
+                    output=path,
+                    quiet=True,
+                )
+            except Exception as err:
+                print(f"Warning: failed to download {name}: {err}")
 
     def _load_artifact_config(self) -> dict:
         if not os.path.exists(self.config_path):
