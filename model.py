@@ -547,6 +547,9 @@ class Transformer(nn.Module):
         elif not user_provided_vocab:
             self._maybe_load_checkpoint(self.best_model_path)
 
+        # Ensure token-id mappings are always in-range for embedding tables.
+        self._align_vocab_with_model_sizes()
+
     def _reset_parameters(self) -> None:
         for p in self.parameters():
             if p.dim() > 1:
@@ -638,6 +641,39 @@ class Transformer(nn.Module):
         if self.spacy_src is None:
             return sentence.strip().split()
         return [tok.text.lower() for tok in self.spacy_src(sentence)]
+
+    def _align_vocab_with_model_sizes(self) -> None:
+        """
+        Align vocab mappings with embedding-table limits.
+
+        If vocab files and checkpoint were produced from different runs,
+        this prevents out-of-range indices during inference.
+        """
+        src_size = self.src_embed.num_embeddings
+        tgt_size = self.tgt_embed.num_embeddings
+
+        def _normalize(stoi: dict, itos: list, vocab_size: int):
+            if vocab_size <= 0:
+                return {}, []
+
+            new_itos = ["<unk>"] * vocab_size
+            for idx, tok in enumerate(itos[:vocab_size]):
+                new_itos[idx] = tok
+
+            new_stoi = {}
+            for tok, idx in stoi.items():
+                if 0 <= idx < vocab_size:
+                    new_stoi[tok] = idx
+
+            if "<unk>" not in new_stoi:
+                new_stoi["<unk>"] = 0
+            if 0 <= new_stoi["<unk>"] < vocab_size:
+                new_itos[new_stoi["<unk>"]] = "<unk>"
+
+            return new_stoi, new_itos
+
+        self.src_stoi, self.src_itos = _normalize(self.src_stoi, self.src_itos, src_size)
+        self.tgt_stoi, self.tgt_itos = _normalize(self.tgt_stoi, self.tgt_itos, tgt_size)
 
     def _ids_to_tgt_text(self, token_ids: list[int]) -> str:
         words = []
@@ -758,8 +794,18 @@ class Transformer(nn.Module):
         device = next(self.parameters()).device
 
         src_tokens = self._tokenize_src(src_sentence)
+        src_vocab_size = self.src_embed.num_embeddings
         unk_idx = self.src_stoi.get("<unk>", 0)
-        src_ids = [self.sos_idx] + [self.src_stoi.get(tok, unk_idx) for tok in src_tokens] + [self.eos_idx]
+        if not (0 <= unk_idx < src_vocab_size):
+            unk_idx = 0
+
+        src_ids = [self.sos_idx]
+        for tok in src_tokens:
+            idx = self.src_stoi.get(tok, unk_idx)
+            if not (0 <= idx < src_vocab_size):
+                idx = unk_idx
+            src_ids.append(idx)
+        src_ids.append(self.eos_idx)
 
         src = torch.tensor(src_ids, dtype=torch.long, device=device).unsqueeze(0)
         src_mask = make_src_mask(src, self.pad_idx).to(device)
