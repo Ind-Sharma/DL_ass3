@@ -474,10 +474,10 @@ class Transformer(nn.Module):
         self.tgt_vocab_path = os.path.join(self.assets_dir, "tgt_vocab.pt")
         self.best_model_path = os.path.join(self.assets_dir, "best_model.pt")
         self.artifact_ids = {
-            "best_model.pt": "1eyb3Grpegv31IBjmQnk1z99ny97Tdv8d",
-            "config.json": "1H80HOScuDZ27F_cUD0294UJlcxGPlDjC",
-            "src_vocab.pt": "1WoETZ974sAAjZPtJP1hovlMbgIMofPHF",
-            "tgt_vocab.pt": "1hNvLUC-rKhTTewGWbHskkR1iyYGgFMXs",
+            "best_model.pt": "11v-dkrJIx_dVrCkOme9hv5-ADoah8a-n",
+            "config.json": "16tqYPizS0QqY3R-meAB5px6IMxG8i2LC",
+            "src_vocab.pt": "1amQOY8YHSo2wCugnlC1PK69_dThie2ip",
+            "tgt_vocab.pt": "1Ia6MNPRqBNo73YDMdmV6hQ6obBBShlet",
         }
 
         self.pad_idx = 1
@@ -587,6 +587,10 @@ class Transformer(nn.Module):
             "best_model.pt": self.best_model_path,
         }
         for name, path in file_map.items():
+            if force_download and os.path.exists(path):
+                # Strict refresh: do not allow stale local artifacts.
+                os.remove(path)
+
             if (not force_download) and os.path.exists(path):
                 continue
             file_id = self.artifact_ids.get(name)
@@ -600,6 +604,45 @@ class Transformer(nn.Module):
                 )
             except Exception as err:
                 print(f"Warning: failed to download {name}: {err}")
+
+        self._validate_artifact_files(file_map)
+
+    def _validate_artifact_files(self, file_map: dict[str, str]) -> None:
+        """
+        Ensure all required artifacts exist and are readable.
+        """
+        missing = []
+        invalid = []
+
+        for name, path in file_map.items():
+            if (not os.path.exists(path)) or os.path.getsize(path) == 0:
+                missing.append(name)
+                continue
+
+            try:
+                if name == "config.json":
+                    with open(path, "r", encoding="utf-8") as f:
+                        cfg = json.load(f)
+                    model_cfg = cfg.get("model", cfg)
+                    required = {"src_vocab_size", "tgt_vocab_size", "d_model", "N", "num_heads", "d_ff", "dropout"}
+                    if not all(k in model_cfg for k in required):
+                        invalid.append(f"{name} (missing model keys)")
+                else:
+                    # Validate torch serialization readability.
+                    _ = torch.load(path, map_location=torch.device("cpu"))
+            except Exception as err:
+                invalid.append(f"{name} ({err})")
+
+        if missing or invalid:
+            problems = []
+            if missing:
+                problems.append("missing: " + ", ".join(missing))
+            if invalid:
+                problems.append("invalid: " + ", ".join(invalid))
+            raise RuntimeError(
+                "Artifact preparation failed after download attempt; "
+                + "; ".join(problems)
+            )
 
     def _load_artifact_config(self) -> dict:
         if not os.path.exists(self.config_path):
