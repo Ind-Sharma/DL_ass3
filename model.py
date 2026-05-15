@@ -497,7 +497,8 @@ class Transformer(nn.Module):
         self.spacy_tgt = None
 
         os.makedirs(self.assets_dir, exist_ok=True)
-        self._ensure_artifacts_available()
+        # Default behavior: always refresh inference artifacts from Drive.
+        self._ensure_artifacts_available(force_download=True)
 
         user_provided_vocab = (src_vocab_size is not None) and (tgt_vocab_size is not None)
         artifact_cfg = self._load_artifact_config()
@@ -572,9 +573,12 @@ class Transformer(nn.Module):
         state_dict = checkpoint.get("model_state_dict", checkpoint)
         self.load_state_dict(state_dict, strict=False)
 
-    def _ensure_artifacts_available(self) -> None:
+    def _ensure_artifacts_available(self, force_download: bool = False) -> None:
         """
-        Download required inference artifacts from Google Drive when missing.
+        Download required inference artifacts from Google Drive.
+
+        Args:
+            force_download: If True, always attempt download even if file exists.
         """
         file_map = {
             "config.json": self.config_path,
@@ -583,7 +587,7 @@ class Transformer(nn.Module):
             "best_model.pt": self.best_model_path,
         }
         for name, path in file_map.items():
-            if os.path.exists(path):
+            if (not force_download) and os.path.exists(path):
                 continue
             file_id = self.artifact_ids.get(name)
             if not file_id:
