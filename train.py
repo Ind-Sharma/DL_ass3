@@ -20,6 +20,8 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from typing import Optional
 import math
+import os
+import json
 from tqdm import tqdm
 import evaluate
 import wandb
@@ -377,6 +379,100 @@ def load_checkpoint(
     return int(ckpt.get("epoch", 0))
 
 
+def save_inference_artifacts(
+    model: Transformer,
+    src_vocab,
+    tgt_vocab,
+    artifacts_dir: str = "artifacts",
+) -> None:
+    """
+    Save lightweight inference artifacts expected by Transformer().
+
+    Files produced:
+      - artifacts/best_model.pt      (state_dict only)
+      - artifacts/src_vocab.pt
+      - artifacts/tgt_vocab.pt
+      - artifacts/config.json
+    """
+    os.makedirs(artifacts_dir, exist_ok=True)
+
+    model_path = os.path.join(artifacts_dir, "best_model.pt")
+    src_vocab_path = os.path.join(artifacts_dir, "src_vocab.pt")
+    tgt_vocab_path = os.path.join(artifacts_dir, "tgt_vocab.pt")
+    config_path = os.path.join(artifacts_dir, "config.json")
+
+    cpu_state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
+    torch.save(cpu_state, model_path)
+    torch.save(src_vocab, src_vocab_path)
+    torch.save(tgt_vocab, tgt_vocab_path)
+
+    model_cfg = getattr(model, "config", {})
+    config = {
+        "model": {
+            "src_vocab_size": int(model_cfg.get("src_vocab_size", model.src_embed.num_embeddings)),
+            "tgt_vocab_size": int(model_cfg.get("tgt_vocab_size", model.tgt_embed.num_embeddings)),
+            "d_model": int(model_cfg.get("d_model", model.src_embed.embedding_dim)),
+            "N": int(model_cfg.get("N", len(model.encoder.layers))),
+            "num_heads": int(model_cfg.get("num_heads", model.encoder.layers[0].self_attn.num_heads)),
+            "d_ff": int(model_cfg.get("d_ff", model.encoder.layers[0].ffn.linear1.out_features)),
+            "dropout": float(model_cfg.get("dropout", model.pos_enc.dropout.p)),
+        },
+        "pad_idx": 1,
+        "sos_idx": 2,
+        "eos_idx": 3,
+        "max_infer_len": 100,
+        "src_lang": "de",
+        "tgt_lang": "en",
+    }
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+
+
+def export_inference_artifacts_from_checkpoint(
+    checkpoint_path: str,
+    artifacts_dir: str = "artifacts",
+) -> None:
+    """
+    Rebuild inference artifacts from an already trained checkpoint.
+
+    This avoids retraining and is useful before submission. It expects:
+      - checkpoint_path to exist and contain `model_config`
+      - source/target vocab files to either already exist in artifacts_dir
+        or be built from the train split.
+    """
+    ckpt = torch.load(checkpoint_path, map_location=torch.device("cpu"))
+    model_config = ckpt.get("model_config")
+    if model_config is None:
+        raise ValueError("Checkpoint is missing `model_config`; cannot reconstruct model.")
+
+    os.makedirs(artifacts_dir, exist_ok=True)
+    src_vocab_path = os.path.join(artifacts_dir, "src_vocab.pt")
+    tgt_vocab_path = os.path.join(artifacts_dir, "tgt_vocab.pt")
+
+    if os.path.exists(src_vocab_path) and os.path.exists(tgt_vocab_path):
+        src_vocab = torch.load(src_vocab_path, map_location=torch.device("cpu"))
+        tgt_vocab = torch.load(tgt_vocab_path, map_location=torch.device("cpu"))
+    else:
+        # Build once if vocab artifacts are unavailable.
+        ds = Multi30kDataset(split="train")
+        src_vocab, tgt_vocab = ds.build_vocab()
+        torch.save(src_vocab, src_vocab_path)
+        torch.save(tgt_vocab, tgt_vocab_path)
+
+    model = Transformer(
+        src_vocab_size=model_config["src_vocab_size"],
+        tgt_vocab_size=model_config["tgt_vocab_size"],
+        d_model=model_config["d_model"],
+        N=model_config["N"],
+        num_heads=model_config["num_heads"],
+        d_ff=model_config["d_ff"],
+        dropout=model_config["dropout"],
+        checkpoint_path=None,
+    )
+    model.load_state_dict(ckpt["model_state_dict"])
+    save_inference_artifacts(model, src_vocab, tgt_vocab, artifacts_dir=artifacts_dir)
+
+
 # ══════════════════════════════════════════════════════════════════════
 #   EXPERIMENT ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════
@@ -425,7 +521,7 @@ def run_training_experiment() -> None:
     train_ds = Multi30kDataset(split="train")
     src_vocab, tgt_vocab = train_ds.build_vocab()
     train_ds.process_data()
-    train_ds.save_vocab(".")
+    train_ds.save_vocab("artifacts")
 
     val_ds = Multi30kDataset(split="validation")
     val_ds.src_vocab = src_vocab
@@ -512,6 +608,7 @@ def run_training_experiment() -> None:
             save_checkpoint(model, optimizer, scheduler, epoch, path=cfg.checkpoint_path)
 
     load_checkpoint(cfg.checkpoint_path, model)
+    save_inference_artifacts(model, src_vocab, tgt_vocab, artifacts_dir="artifacts")
     bleu = evaluate_bleu(model, test_loader, tgt_vocab, device=device)
     wandb.log({"test_bleu": bleu})
     wandb.finish()

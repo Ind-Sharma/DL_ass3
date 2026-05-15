@@ -18,7 +18,6 @@ import math
 import copy
 import os
 import json
-import gdown
 from typing import Optional, Tuple
 
 import torch
@@ -467,7 +466,13 @@ class Transformer(nn.Module):
         assets_dir: Optional[str] = None,
     ) -> None:
         super().__init__()
-        self.assets_dir = assets_dir or os.path.dirname(__file__)
+        # Keep all inference artifacts under a stable relative directory.
+        self.assets_dir = assets_dir or os.path.join(os.path.dirname(__file__), "artifacts")
+        self.config_path = os.path.join(self.assets_dir, "config.json")
+        self.src_vocab_path = os.path.join(self.assets_dir, "src_vocab.pt")
+        self.tgt_vocab_path = os.path.join(self.assets_dir, "tgt_vocab.pt")
+        self.best_model_path = os.path.join(self.assets_dir, "best_model.pt")
+
         self.pad_idx = 1
         self.sos_idx = 2
         self.eos_idx = 3
@@ -484,16 +489,31 @@ class Transformer(nn.Module):
         self.spacy_src = None
         self.spacy_tgt = None
 
+        user_provided_vocab = (src_vocab_size is not None) and (tgt_vocab_size is not None)
+        artifact_cfg = self._load_artifact_config()
         self._load_text_assets()
+        self._apply_runtime_config(artifact_cfg)
 
-        if src_vocab_size is None:
-            src_vocab_size = len(self.src_itos) if self.src_itos else None
-        if tgt_vocab_size is None:
-            tgt_vocab_size = len(self.tgt_itos) if self.tgt_itos else None
+        # Autograder path (Transformer() with no args): reconstruct full model from config.
+        if not user_provided_vocab:
+            model_cfg = artifact_cfg.get("model", artifact_cfg)
+            src_vocab_size = model_cfg.get("src_vocab_size", src_vocab_size)
+            tgt_vocab_size = model_cfg.get("tgt_vocab_size", tgt_vocab_size)
+            d_model = model_cfg.get("d_model", d_model)
+            N = model_cfg.get("N", N)
+            num_heads = model_cfg.get("num_heads", num_heads)
+            d_ff = model_cfg.get("d_ff", d_ff)
+            dropout = model_cfg.get("dropout", dropout)
+
+        if src_vocab_size is None and self.src_itos:
+            src_vocab_size = len(self.src_itos)
+        if tgt_vocab_size is None and self.tgt_itos:
+            tgt_vocab_size = len(self.tgt_itos)
 
         if src_vocab_size is None or tgt_vocab_size is None:
             raise ValueError(
-                "src_vocab_size/tgt_vocab_size not provided and vocab artifacts are unavailable."
+                "src_vocab_size/tgt_vocab_size not provided and artifacts are unavailable. "
+                "Expected artifacts/config.json, artifacts/src_vocab.pt, and artifacts/tgt_vocab.pt."
             )
 
         self.config = {
@@ -519,53 +539,50 @@ class Transformer(nn.Module):
 
         self._reset_parameters()
 
-        checkpoint_path = checkpoint_path or os.path.join(self.assets_dir, "transformer_checkpoint.pth")
-        checkpoint_id = checkpoint_id or os.getenv("A3_CHECKPOINT_GDRIVE_ID")
-        self._maybe_download_checkpoint(checkpoint_path, checkpoint_id)
-        self._maybe_load_checkpoint(checkpoint_path)
+        # Keep training behavior unchanged:
+        # - If constructor args are provided and no checkpoint_path is passed, do not auto-load weights.
+        # - If called with no args (autograder inference path), auto-load artifacts/best_model.pt.
+        if checkpoint_path is not None:
+            self._maybe_load_checkpoint(checkpoint_path)
+        elif not user_provided_vocab:
+            self._maybe_load_checkpoint(self.best_model_path)
 
     def _reset_parameters(self) -> None:
         for p in self.parameters():
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def _maybe_download_checkpoint(self, checkpoint_path: str, checkpoint_id: Optional[str]) -> None:
-        if os.path.exists(checkpoint_path):
-            return
-        if checkpoint_id:
-            try:
-                gdown.download(id=checkpoint_id, output=checkpoint_path, quiet=False)
-            except Exception as err:
-                print(f"Warning: checkpoint download failed: {err}")
-
     def _maybe_load_checkpoint(self, checkpoint_path: str) -> None:
         if not os.path.exists(checkpoint_path):
             return
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        checkpoint = torch.load(checkpoint_path, map_location=torch.device("cpu"))
         state_dict = checkpoint.get("model_state_dict", checkpoint)
         self.load_state_dict(state_dict, strict=False)
 
+    def _load_artifact_config(self) -> dict:
+        if not os.path.exists(self.config_path):
+            return {}
+        with open(self.config_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def _apply_runtime_config(self, cfg: dict) -> None:
+        infer_cfg = cfg.get("inference", {})
+        tokenizer_cfg = cfg.get("tokenizer", {})
+
+        self.pad_idx = cfg.get("pad_idx", infer_cfg.get("pad_idx", self.pad_idx))
+        self.sos_idx = cfg.get("sos_idx", infer_cfg.get("sos_idx", self.sos_idx))
+        self.eos_idx = cfg.get("eos_idx", infer_cfg.get("eos_idx", self.eos_idx))
+        self.max_infer_len = cfg.get("max_infer_len", infer_cfg.get("max_infer_len", self.max_infer_len))
+        self.src_lang = cfg.get("src_lang", tokenizer_cfg.get("src_lang", self.src_lang))
+        self.tgt_lang = cfg.get("tgt_lang", tokenizer_cfg.get("tgt_lang", self.tgt_lang))
+
     def _load_text_assets(self) -> None:
-        config_path = os.path.join(self.assets_dir, "inference_assets.json")
-        if os.path.exists(config_path):
-            with open(config_path, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-            self.pad_idx = cfg.get("pad_idx", self.pad_idx)
-            self.sos_idx = cfg.get("sos_idx", self.sos_idx)
-            self.eos_idx = cfg.get("eos_idx", self.eos_idx)
-            self.max_infer_len = cfg.get("max_infer_len", self.max_infer_len)
-            self.src_lang = cfg.get("src_lang", self.src_lang)
-            self.tgt_lang = cfg.get("tgt_lang", self.tgt_lang)
-
-        src_vocab_path = os.path.join(self.assets_dir, "src_vocab.pt")
-        tgt_vocab_path = os.path.join(self.assets_dir, "tgt_vocab.pt")
         joint_vocab_path = os.path.join(self.assets_dir, "vocab.pt")
-
-        if os.path.exists(src_vocab_path) and os.path.exists(tgt_vocab_path):
-            self.src_vocab = torch.load(src_vocab_path, map_location="cpu")
-            self.tgt_vocab = torch.load(tgt_vocab_path, map_location="cpu")
+        if os.path.exists(self.src_vocab_path) and os.path.exists(self.tgt_vocab_path):
+            self.src_vocab = torch.load(self.src_vocab_path, map_location=torch.device("cpu"))
+            self.tgt_vocab = torch.load(self.tgt_vocab_path, map_location=torch.device("cpu"))
         elif os.path.exists(joint_vocab_path):
-            bundle = torch.load(joint_vocab_path, map_location="cpu")
+            bundle = torch.load(joint_vocab_path, map_location=torch.device("cpu"))
             self.src_vocab = bundle.get("src_vocab")
             self.tgt_vocab = bundle.get("tgt_vocab")
 
@@ -753,3 +770,8 @@ class Transformer(nn.Module):
 
         token_ids = ys.squeeze(0).tolist()
         return self._ids_to_tgt_text(token_ids)
+
+
+# Local verification example:
+# model = Transformer()
+# print(model.infer("ein mann spielt gitarre"))
