@@ -1,7 +1,6 @@
 import os
 import json
 from collections import Counter
-from typing import Optional
 
 import torch
 from torch.utils.data import Dataset
@@ -15,9 +14,7 @@ SPECIAL_TOKENS = ["<unk>", "<pad>", "<sos>", "<eos>"]
 
 class Multi30kDataset(Dataset):
     def __init__(self, split='train'):
-        """
-        Loads the Multi30k dataset and prepares tokenizers.
-        """
+        # basic setup for split + tokenizers
         self.split = split
         self.ds = load_dataset("bentrevett/multi30k", split=split)
         self.spacy_de = self._load_spacy("de", "de_core_news_sm")
@@ -49,10 +46,7 @@ class Multi30kDataset(Dataset):
         return [tok.text.lower() for tok in nlp(text)]
 
     def build_vocab(self):
-        """
-        Builds the vocabulary mapping for src (de) and tgt (en), including:
-        <unk>, <pad>, <sos>, <eos>
-        """
+        # build small vocab maps for src/tgt
         src_counter = Counter()
         tgt_counter = Counter()
 
@@ -76,10 +70,7 @@ class Multi30kDataset(Dataset):
         return self.src_vocab, self.tgt_vocab
 
     def process_data(self):
-        """
-        Convert English and German sentences into integer token lists using
-        spacy and the defined vocabulary. 
-        """
+        # tokenize + convert to ids
         if not self.src_stoi or not self.tgt_stoi:
             raise RuntimeError("Build or load vocab before calling process_data().")
 

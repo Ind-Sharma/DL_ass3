@@ -27,11 +27,7 @@ import torch.nn.functional as F
 import spacy
 
 
-# ══════════════════════════════════════════════════════════════════════
-#   STANDALONE ATTENTION FUNCTION  
-#    Exposed at module level so the autograder can import and test it
-#    independently of MultiHeadAttention.
-# ══════════════════════════════════════════════════════════════════════
+# Basic stand alone attension func for tests.
 
 def scaled_dot_product_attention(
     Q: torch.Tensor,
@@ -68,11 +64,7 @@ def scaled_dot_product_attention(
     return output, attn_w
 
 
-# ══════════════════════════════════════════════════════════════════════
-# ❷  MASK HELPERS 
-#    Exposed at module level so they can be tested independently and
-#    reused inside Transformer.forward.
-# ══════════════════════════════════════════════════════════════════════
+# Basic mask helpers.
 
 def make_src_mask(
     src: torch.Tensor,
@@ -121,9 +113,7 @@ def make_tgt_mask(
     return pad_mask | causal_mask
 
 
-# ══════════════════════════════════════════════════════════════════════
-#  MULTI-HEAD ATTENTION 
-# ══════════════════════════════════════════════════════════════════════
+# Multi head attension block.
 
 class MultiHeadAttention(nn.Module):
     """
@@ -194,9 +184,7 @@ class MultiHeadAttention(nn.Module):
         return self.W_o(out)
 
 
-# ══════════════════════════════════════════════════════════════════════
-#   POSITIONAL ENCODING  
-# ══════════════════════════════════════════════════════════════════════
+# Positional encodng.
 
 class PositionalEncoding(nn.Module):
     """
@@ -238,9 +226,7 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
-# ══════════════════════════════════════════════════════════════════════
-#  FEED-FORWARD NETWORK 
-# ══════════════════════════════════════════════════════════════════════
+# FFN block.
 
 class PositionwiseFeedForward(nn.Module):
     """
@@ -275,9 +261,7 @@ class PositionwiseFeedForward(nn.Module):
         return self.linear2(self.dropout(F.relu(self.linear1(x))))
 
 
-# ══════════════════════════════════════════════════════════════════════
-#  ENCODER LAYER  
-# ══════════════════════════════════════════════════════════════════════
+# Encoder layer.
 
 class EncoderLayer(nn.Module):
     """
@@ -311,7 +295,7 @@ class EncoderLayer(nn.Module):
             shape [batch, src_len, d_model]
 
         """
-        # Pre-LN for stable optimization in deeper stacks.
+        # pre-LN keeps trianing stable.
         attn_out = self.self_attn(self.norm1(x), self.norm1(x), self.norm1(x), src_mask)
         x = x + self.dropout1(attn_out)
 
@@ -320,9 +304,7 @@ class EncoderLayer(nn.Module):
         return x
 
 
-# ══════════════════════════════════════════════════════════════════════
-#   DECODER LAYER 
-# ══════════════════════════════════════════════════════════════════════
+# Decoder layer.
 
 class DecoderLayer(nn.Module):
     """
@@ -381,9 +363,7 @@ class DecoderLayer(nn.Module):
         return x
 
 
-# ══════════════════════════════════════════════════════════════════════
-#  ENCODER & DECODER STACKS
-# ══════════════════════════════════════════════════════════════════════
+# Encoder/decoder stacks.
 
 class Encoder(nn.Module):
     """Stack of N identical EncoderLayer modules with final LayerNorm."""
@@ -435,9 +415,7 @@ class Decoder(nn.Module):
         return self.norm(x)
 
 
-# ══════════════════════════════════════════════════════════════════════
-#   FULL TRANSFORMER  
-# ══════════════════════════════════════════════════════════════════════
+# Full transformer.
 
 class Transformer(nn.Module):
     """
@@ -467,7 +445,7 @@ class Transformer(nn.Module):
         assets_dir: Optional[str] = None,
     ) -> None:
         super().__init__()
-        # Keep all inference artifacts under a stable relative directory.
+        # Keep infernce artifacts in one local dir.
         self.assets_dir = assets_dir or os.path.join(os.path.dirname(__file__), "artifacts")
         self.config_path = os.path.join(self.assets_dir, "config.json")
         self.src_vocab_path = os.path.join(self.assets_dir, "src_vocab.pt")
@@ -497,7 +475,7 @@ class Transformer(nn.Module):
         self.spacy_tgt = None
 
         os.makedirs(self.assets_dir, exist_ok=True)
-        # Default behavior: always refresh inference artifacts from Drive.
+        # Default: always refresh infernce artifacts from drive.
         self._ensure_artifacts_available(force_download=True)
 
         user_provided_vocab = (src_vocab_size is not None) and (tgt_vocab_size is not None)
@@ -505,7 +483,7 @@ class Transformer(nn.Module):
         self._load_text_assets()
         self._apply_runtime_config(artifact_cfg)
 
-        # Autograder path (Transformer() with no args): reconstruct full model from config.
+        # For no-arg init, rebuld model from config.
         if not user_provided_vocab:
             model_cfg = artifact_cfg.get("model", artifact_cfg)
             src_vocab_size = model_cfg.get("src_vocab_size", src_vocab_size)
@@ -550,15 +528,14 @@ class Transformer(nn.Module):
 
         self._reset_parameters()
 
-        # Keep training behavior unchanged:
-        # - If constructor args are provided and no checkpoint_path is passed, do not auto-load weights.
-        # - If called with no args (autograder inference path), auto-load artifacts/best_model.pt.
+        # Keep trianing path simple:
+        # args given -> dont auto load, no-arg -> load best model.
         if checkpoint_path is not None:
             self._maybe_load_checkpoint(checkpoint_path)
         elif not user_provided_vocab:
             self._maybe_load_checkpoint(self.best_model_path)
 
-        # Ensure token-id mappings are always in-range for embedding tables.
+        # Keep token ids in valid range.
         self._align_vocab_with_model_sizes()
 
     def _reset_parameters(self) -> None:
@@ -575,10 +552,10 @@ class Transformer(nn.Module):
 
     def _ensure_artifacts_available(self, force_download: bool = False) -> None:
         """
-        Download required inference artifacts from Google Drive.
+        Download infernce artifacts from Google Drive.
 
         Args:
-            force_download: If True, always attempt download even if file exists.
+            force_download: If True, always redownload.
         """
         file_map = {
             "config.json": self.config_path,
@@ -588,7 +565,7 @@ class Transformer(nn.Module):
         }
         for name, path in file_map.items():
             if force_download and os.path.exists(path):
-                # Strict refresh: do not allow stale local artifacts.
+                # strict refresh, dont keep stale files.
                 os.remove(path)
 
             if (not force_download) and os.path.exists(path):
@@ -628,7 +605,7 @@ class Transformer(nn.Module):
                     if not all(k in model_cfg for k in required):
                         invalid.append(f"{name} (missing model keys)")
                 else:
-                    # Validate torch serialization readability.
+                    # validate torch file can be loaded.
                     _ = torch.load(path, map_location=torch.device("cpu"))
             except Exception as err:
                 invalid.append(f"{name} ({err})")
@@ -726,10 +703,7 @@ class Transformer(nn.Module):
 
     def _align_vocab_with_model_sizes(self) -> None:
         """
-        Align vocab mappings with embedding-table limits.
-
-        If vocab files and checkpoint were produced from different runs,
-        this prevents out-of-range indices during inference.
+        Align vocab mapping to embedding size.
         """
         src_size = self.src_embed.num_embeddings
         tgt_size = self.tgt_embed.num_embeddings

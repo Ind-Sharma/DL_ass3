@@ -31,9 +31,7 @@ from dataset import Multi30kDataset, collate_batch
 from lr_scheduler import NoamScheduler
 
 
-# ══════════════════════════════════════════════════════════════════════
-#  LABEL SMOOTHING LOSS  
-# ══════════════════════════════════════════════════════════════════════
+# label smoothing
 
 class LabelSmoothingLoss(nn.Module):
     """
@@ -79,9 +77,7 @@ class LabelSmoothingLoss(nn.Module):
         return loss[non_pad].mean()
 
 
-# ══════════════════════════════════════════════════════════════════════
-#   TRAINING LOOP  
-# ══════════════════════════════════════════════════════════════════════
+# one epoch loop
 
 def run_epoch(
     data_iter,
@@ -147,9 +143,7 @@ def run_epoch(
     return total_loss / max(total_batches, 1)
 
 
-# ══════════════════════════════════════════════════════════════════════
-#   GREEDY DECODING  
-# ══════════════════════════════════════════════════════════════════════
+# greedy decode
 
 def greedy_decode(
     model: Transformer,
@@ -196,9 +190,7 @@ def greedy_decode(
     return ys
 
 
-# ══════════════════════════════════════════════════════════════════════
-#   BLEU EVALUATION  
-# ══════════════════════════════════════════════════════════════════════
+# bleu eval
 
 def evaluate_bleu(
     model: Transformer,
@@ -289,9 +281,7 @@ def evaluate_bleu(
     return bleu * 100.0
 
 
-# ══════════════════════════════════════════════════════════════════════
-# ❺  CHECKPOINT UTILITIES  (autograder loads your model from disk)
-# ══════════════════════════════════════════════════════════════════════
+# checkpoint utils
 
 def save_checkpoint(
     model: Transformer,
@@ -323,7 +313,6 @@ def save_checkpoint(
          'd_model': ..., 'N': ..., 'num_heads': ...,
          'd_ff': ..., 'dropout': ...}
     """
-    # TODO: implement using torch.save({...}, path)
     model_config = getattr(model, "config", None)
     if model_config is None:
         model_config = {
@@ -367,7 +356,6 @@ def load_checkpoint(
         epoch : The epoch at which the checkpoint was saved (int).
 
     """
-    # TODO: implement restore logic
     ckpt = torch.load(path, map_location="cpu")
     model.load_state_dict(ckpt["model_state_dict"])
 
@@ -432,14 +420,7 @@ def export_inference_artifacts_from_checkpoint(
     checkpoint_path: str,
     artifacts_dir: str = "artifacts",
 ) -> None:
-    """
-    Rebuild inference artifacts from an already trained checkpoint.
-
-    This avoids retraining and is useful before submission. It expects:
-      - checkpoint_path to exist and contain `model_config`
-      - source/target vocab files to either already exist in artifacts_dir
-        or be built from the train split.
-    """
+    """Rebuild infernce artifacts from checkpoint."""
     ckpt = torch.load(checkpoint_path, map_location=torch.device("cpu"))
     model_config = ckpt.get("model_config")
     if model_config is None:
@@ -453,7 +434,7 @@ def export_inference_artifacts_from_checkpoint(
         src_vocab = torch.load(src_vocab_path, map_location=torch.device("cpu"))
         tgt_vocab = torch.load(tgt_vocab_path, map_location=torch.device("cpu"))
     else:
-        # Build once if vocab artifacts are unavailable.
+        # build once if vocab files are not there.
         ds = Multi30kDataset(split="train")
         src_vocab, tgt_vocab = ds.build_vocab()
         torch.save(src_vocab, src_vocab_path)
@@ -473,9 +454,7 @@ def export_inference_artifacts_from_checkpoint(
     save_inference_artifacts(model, src_vocab, tgt_vocab, artifacts_dir=artifacts_dir)
 
 
-# ══════════════════════════════════════════════════════════════════════
-#   EXPERIMENT ENTRY POINT
-# ══════════════════════════════════════════════════════════════════════
+# training entry point
 
 def run_training_experiment() -> None:
     """
