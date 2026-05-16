@@ -17,7 +17,7 @@ The submission-facing API is compatible with the assignment autograder, includin
 
 ## Links
 
-- **Weights & Biases Report (public):** _to be added_
+- **Weights & Biases Report (public):** https://wandb.ai/ma24m011-iit-madras/da6401-a3-q2/reports/MA24M011-ASSIGNMENT-3--VmlldzoxNjg5OTk0Nw?accessToken=0jpwoo7z1yl300pmh13taip3jp1vvfhurskxfz86h92hi1elrxyowfdh0c69gqke
 - **GitHub Repository:** https://github.com/Ind-Sharma/DL_ass3
 
 ## Usage
