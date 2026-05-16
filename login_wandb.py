@@ -1,7 +1,7 @@
 import wandb
 
 # Put your key here
-WANDB_API_KEY = "your_key_here"
+WANDB_API_KEY = "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"
 PROJECT_NAME = "da6401-assignment3"
 
 
