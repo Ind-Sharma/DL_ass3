@@ -1,6 +1,7 @@
 import argparse
 import random
 
+import evaluate
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -11,8 +12,8 @@ import wandb
 import model as model_mod
 from dataset import Multi30kDataset, collate_batch
 from lr_scheduler import NoamScheduler
-from model import Transformer
-from train import LabelSmoothingLoss, evaluate_bleu, run_epoch
+from model import Transformer, make_src_mask, make_tgt_mask
+from train import LabelSmoothingLoss, run_epoch
 
 
 def set_seed(seed: int) -> None:
@@ -43,6 +44,99 @@ def make_bleu_loader(val_ds, batch_size: int, pad_idx: int, bleu_limit: int):
     else:
         ds = val_ds
     return DataLoader(ds, batch_size=batch_size, shuffle=False, collate_fn=lambda b: collate_batch(b, pad_idx=pad_idx))
+
+
+def _idx_to_token(tgt_vocab, idx: int) -> str:
+    if isinstance(tgt_vocab, dict):
+        if "itos" in tgt_vocab:
+            return tgt_vocab["itos"][idx]
+        if "idx_to_token" in tgt_vocab:
+            return tgt_vocab["idx_to_token"][idx]
+    if hasattr(tgt_vocab, "itos"):
+        return tgt_vocab.itos[idx]
+    if hasattr(tgt_vocab, "lookup_token"):
+        return tgt_vocab.lookup_token(idx)
+    raise ValueError("Unsupported tgt_vocab format.")
+
+
+def _greedy_decode_ids(
+    model: Transformer,
+    src: torch.Tensor,
+    src_mask: torch.Tensor,
+    start_symbol: int,
+    end_symbol: int,
+    max_len: int,
+    device: str,
+) -> list[int]:
+    with torch.no_grad():
+        memory = model.encode(src, src_mask)
+        ys = torch.ones(1, 1, dtype=torch.long, device=device) * start_symbol
+        for _ in range(max_len - 1):
+            tgt_mask = make_tgt_mask(ys).to(device)
+            out = model.decode(memory, src_mask, ys, tgt_mask)
+            next_word = torch.argmax(out[:, -1, :], dim=-1, keepdim=True)
+            ys = torch.cat([ys, next_word], dim=1)
+            if next_word.item() == end_symbol:
+                break
+    return ys.squeeze(0).tolist()
+
+
+def evaluate_bleu_strings(
+    model: Transformer,
+    data_loader,
+    tgt_vocab,
+    device: str,
+    max_len: int = 100,
+    pad_idx: int = 1,
+    sos_idx: int = 2,
+    eos_idx: int = 3,
+) -> float:
+    metric = evaluate.load("bleu")
+    predictions = []
+    references = []
+
+    model.eval()
+    with torch.no_grad():
+        for src_batch, tgt_batch in data_loader:
+            src_batch = src_batch.to(device)
+            tgt_batch = tgt_batch.to(device)
+
+            for i in range(src_batch.size(0)):
+                src = src_batch[i : i + 1]
+                tgt = tgt_batch[i]
+                src_mask = make_src_mask(src, pad_idx).to(device)
+
+                pred_ids = _greedy_decode_ids(
+                    model=model,
+                    src=src,
+                    src_mask=src_mask,
+                    start_symbol=sos_idx,
+                    end_symbol=eos_idx,
+                    max_len=max_len,
+                    device=device,
+                )
+
+                pred_tokens = []
+                for tid in pred_ids:
+                    if tid == eos_idx:
+                        break
+                    if tid in (pad_idx, sos_idx):
+                        continue
+                    pred_tokens.append(_idx_to_token(tgt_vocab, tid))
+
+                ref_tokens = []
+                for tid in tgt.tolist():
+                    if tid == eos_idx:
+                        break
+                    if tid in (pad_idx, sos_idx):
+                        continue
+                    ref_tokens.append(_idx_to_token(tgt_vocab, tid))
+
+                predictions.append(" ".join(pred_tokens))
+                references.append([" ".join(ref_tokens)])
+
+    bleu = metric.compute(predictions=predictions, references=references)["bleu"]
+    return float(bleu * 100.0)
 
 
 def run_condition(
@@ -121,12 +215,15 @@ def run_condition(
             f"lr={optimizer.param_groups[0]['lr']:.6e}"
         )
 
-    val_bleu = evaluate_bleu(
+    val_bleu = evaluate_bleu_strings(
         model=model,
-        test_dataloader=bleu_loader,
+        data_loader=bleu_loader,
         tgt_vocab=tgt_vocab,
         device=device,
         max_len=args.max_decode_len,
+        pad_idx=args.pad_idx,
+        sos_idx=args.sos_idx,
+        eos_idx=args.eos_idx,
     )
     wandb.log({f"{name}/val_bleu": val_bleu})
     print(f"[{name}] Validation BLEU = {val_bleu:.2f}")
@@ -187,6 +284,8 @@ def main():
     parser.add_argument("--warmup_steps", type=int, default=4000)
     parser.add_argument("--label_smoothing", type=float, default=0.1)
     parser.add_argument("--pad_idx", type=int, default=1)
+    parser.add_argument("--sos_idx", type=int, default=2)
+    parser.add_argument("--eos_idx", type=int, default=3)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--train_limit", type=int, default=0, help="0 means full train set")
     parser.add_argument("--val_limit", type=int, default=0, help="0 means full val set for val-loss")
